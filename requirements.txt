@@ -1,8 +1,9 @@
 streamlit
 pytesseract
-pdf2image
-Pillow
 opencv-python-headless
-numpy
+pillow
+pdf2image
 matplotlib
 seaborn
+pandas
+numpy
