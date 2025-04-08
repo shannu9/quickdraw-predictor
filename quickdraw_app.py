@@ -1,5 +1,5 @@
 # QuickDraw Prediction Web App (Streamlit-based)
-# Features: Upload Training Data | OCR from Screenshot | Toggle Training | Grid + Prediction + Heatmaps + Box Detection + Accuracy
+# Features: Upload PDF or Screenshot | Auto OCR | Grid Filtering | Heatmaps | Co-occurrence & Triplet Analysis | Square/Box Detection | Accuracy Stats | Export Options | Training Toggle
 
 import streamlit as st
 import pandas as pd
@@ -22,6 +22,8 @@ if 'training_enabled' not in st.session_state:
     st.session_state['training_enabled'] = True
 if 'co_occurrence' not in st.session_state:
     st.session_state['co_occurrence'] = defaultdict(lambda: defaultdict(int))
+if 'triplet_occurrence' not in st.session_state:
+    st.session_state['triplet_occurrence'] = defaultdict(int)
 if 'occurrence' not in st.session_state:
     st.session_state['occurrence'] = defaultdict(int)
 if 'predicted_blocks' not in st.session_state:
@@ -31,7 +33,7 @@ if 'last_draw' not in st.session_state:
 if 'pdf_error' not in st.session_state:
     st.session_state['pdf_error'] = ""
 
-# -------------------- FUNCTIONS --------------------
+# -------------------- OCR FROM IMAGE --------------------
 def extract_drawn_numbers_from_image(uploaded_image):
     image = Image.open(uploaded_image)
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -45,29 +47,26 @@ def extract_drawn_numbers_from_image(uploaded_image):
     text = pytesseract.image_to_string(thresh, config='--psm 6 -c tessedit_char_whitelist=0123456789')
     numbers = list(map(int, re.findall(r'\b[1-9]\b|\b[1-7][0-9]\b|\b80\b', text)))
     return sorted(set(numbers))
+
+# -------------------- TRAINING FROM PDF --------------------
 def process_pdf_and_train(uploaded_file):
     try:
         st.session_state['pdf_error'] = ""
-
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
             tmp_file.write(uploaded_file.read())
             temp_pdf_path = tmp_file.name
-
         images = convert_from_path(temp_pdf_path)
         draw_results = []
-        pattern = re.compile(r"(?:\\b\\d{1,2}\\b[\\s]*){10,25}")
+        pattern = re.compile(r"(?:\b\d{1,2}\b[\s]*){10,25}")
         total_pages = len(images)
-
         for i, image in enumerate(images):
-            progress = int((i + 1) / total_pages * 100)
-            st.info(f"Processing page {i+1}/{total_pages} ({progress}%)")
+            st.info(f"Processing page {i+1}/{total_pages} ({int((i+1)/total_pages*100)}%)")
             text = pytesseract.image_to_string(image)
             matches = pattern.findall(text)
             for match in matches:
-                numbers = list(map(int, re.findall(r'\\b\\d{1,2}\\b', match)))
+                numbers = list(map(int, re.findall(r'\b\d{1,2}\b', match)))
                 if len(numbers) == 20:
                     draw_results.append(numbers)
-
         df = pd.DataFrame(draw_results)
         if not df.empty:
             for row in df.values:
@@ -77,13 +76,59 @@ def process_pdf_and_train(uploaded_file):
                     for j in range(i + 1, len(row)):
                         a, b = sorted((row[i], row[j]))
                         st.session_state['co_occurrence'][a][b] += 1
-            st.success(f"Successfully trained on {len(df)} draws from PDF.")
+                for i in range(len(row)):
+                    for j in range(i + 1, len(row)):
+                        for k in range(j + 1, len(row)):
+                            t = tuple(sorted((row[i], row[j], row[k])))
+                            st.session_state['triplet_occurrence'][t] += 1
+            st.success(f"✅ Trained from {len(df)} draws.")
         else:
-            raise ValueError("No valid draw lines found in the PDF.")
-
+            raise ValueError("No valid draw lines found.")
     except Exception as e:
         st.session_state['pdf_error'] = str(e)
 
+# -------------------- VISUALIZATIONS --------------------
+def draw_heatmap():
+    heatmap = np.zeros((8, 10))
+    for num, freq in st.session_state['occurrence'].items():
+        r, c = divmod(num - 1, 10)
+        heatmap[r][c] = freq
+    fig, ax = plt.subplots(figsize=(10, 8))
+    sns.heatmap(heatmap, annot=True, fmt=".0f", cmap="YlOrRd", ax=ax)
+    ax.set_title("🎨 Number Frequency Heatmap")
+    st.pyplot(fig)
+
+def highlight_boxes(drawn):
+    grid = np.arange(1, 81).reshape(8, 10)
+    mask = np.isin(grid, drawn, invert=True)
+    boxes = set()
+    for r in range(8):
+        for c in range(10):
+            for h in range(1, 9 - r):
+                for w in range(1, 11 - c):
+                    block = mask[r:r+h, c:c+w]
+                    if np.all(block):
+                        box_nums = {grid[r+i][c+j] for i in range(h) for j in range(w)}
+                        boxes.add(frozenset(box_nums))
+    st.session_state['predicted_blocks'] = set.union(*boxes) if boxes else set()
+    if boxes:
+        st.write("### 📦 Possible Square/Rectangle Formations")
+        fig, ax = plt.subplots(figsize=(10, 8))
+        for i in range(8):
+            for j in range(10):
+                color = 'gray' if grid[i, j] in drawn else 'white'
+                ax.add_patch(plt.Rectangle((j, 7 - i), 1, 1, color=color, ec='black'))
+                ax.text(j + 0.5, 7.5 - i, str(grid[i, j]), ha='center', va='center', fontsize=8)
+        for b in list(boxes)[:5]:
+            for num in b:
+                i, j = divmod(num - 1, 10)
+                ax.add_patch(plt.Rectangle((j, 7 - i), 1, 1, fill=False, edgecolor='blue', linewidth=1.5))
+        ax.set_xlim(0, 10)
+        ax.set_ylim(0, 8)
+        ax.axis('off')
+        st.pyplot(fig)
+
+# -------------------- PREDICTIONS & EXPORT --------------------
 def predict_top_numbers(n=20):
     return sorted(st.session_state['occurrence'].items(), key=lambda x: x[1], reverse=True)[:n]
 
@@ -94,92 +139,18 @@ def predict_top_pairs(n=10):
             pairs.append(((a, b), st.session_state['co_occurrence'][a][b]))
     return sorted(pairs, key=lambda x: x[1], reverse=True)[:n]
 
+def predict_top_triplets(n=10):
+    return sorted(st.session_state['triplet_occurrence'].items(), key=lambda x: x[1], reverse=True)[:n]
+
 def calculate_accuracy(drawn, predicted_nums, predicted_blocks):
     match_nums = set(drawn) & set(predicted_nums)
-    match_block = set(drawn) & set(predicted_blocks)
-    return len(match_nums) / len(predicted_nums), len(match_block) / max(len(predicted_blocks), 1)
+    match_box = set(drawn) & set(predicted_blocks)
+    return len(match_nums)/len(predicted_nums), len(match_box)/max(len(predicted_blocks), 1)
 
-def highlight_boxes(drawn):
-    grid = np.arange(1, 81).reshape(8, 10)
-    mask = np.isin(grid, list(drawn), invert=True)
-    blocks = set()
-    for r in range(8):
-        for c in range(10):
-            for h in range(1, 9 - r):
-                for w in range(1, 11 - c):
-                    region = mask[r:r+h, c:c+w]
-                    if np.all(region):
-                        box_nums = set(grid[r + i][c + j] for i in range(h) for j in range(w))
-                        blocks.add(frozenset(box_nums))
-                        if h >= 2 and w >= 2:
-                            break
-    st.session_state['predicted_blocks'] = set.union(*blocks) if blocks else set()
-    if blocks:
-        st.write("### 📦 Possible Square/Rectangle Formations")
-        fig, ax = plt.subplots(figsize=(10, 8))
-        for i in range(8):
-            for j in range(10):
-                color = 'gray' if grid[i, j] in drawn else 'white'
-                ax.add_patch(plt.Rectangle((j, 7 - i), 1, 1, color=color, ec='black'))
-                ax.text(j + 0.5, 7.5 - i, str(grid[i, j]), ha='center', va='center', fontsize=8)
-        for b in list(blocks)[:5]:
-            for num in b:
-                i, j = divmod(num - 1, 10)
-                ax.add_patch(plt.Rectangle((j, 7 - i), 1, 1, fill=False, edgecolor='blue', linewidth=1.5))
-        ax.set_xlim(0, 10)
-        ax.set_ylim(0, 8)
-        ax.axis('off')
-        st.pyplot(fig)
-    else:
-        st.info("No valid rectangles found in leftover grid.")
-
-def draw_heatmap():
-    heat_values = np.zeros((8, 10))
-    for num, freq in st.session_state['occurrence'].items():
-        i, j = divmod(num - 1, 10)
-        heat_values[i, j] = freq
-    fig, ax = plt.subplots(figsize=(10, 8))
-    sns.heatmap(heat_values, annot=True, fmt=".0f", cmap="YlOrRd", cbar=True, ax=ax)
-    ax.set_title("Number Frequency Heatmap")
-    st.pyplot(fig)
-
-# -------------------- MAIN INTERFACE --------------------
-st.sidebar.title("Quick Draw Dashboard")
-train_toggle = st.sidebar.checkbox("Enable Training from Uploaded Data", value=True)
-st.session_state['training_enabled'] = train_toggle
-
-st.title("🎯 NJ Lottery Quick Draw Prediction Tool")
-
-uploaded_img = st.file_uploader("Upload Screenshot of Latest Draw (highlighted numbers)", type=['png', 'jpg', 'jpeg'])
-if uploaded_img:
-    draw = extract_drawn_numbers_from_image(uploaded_img)
-    st.session_state['last_draw'] = draw
-    st.success(f"Detected Drawn Numbers: {draw}")
-    highlight_boxes(draw)
-else:
-    st.warning("Upload a screenshot to begin analysis.")
-
-uploaded_pdf = st.file_uploader("Upload Historical Draw Data (PDF)", type=['pdf'])
-if uploaded_pdf and st.session_state['training_enabled']:
-    with st.spinner("Training from uploaded PDF..."):
-        process_pdf_and_train(uploaded_pdf)
-if st.session_state['pdf_error']:
-    st.error(f"❌ PDF Error: {st.session_state['pdf_error']}")
-
-if st.button("🔮 Show Predictions"):
-    top_nums = predict_top_numbers()
-    top_pairs = predict_top_pairs()
-    st.subheader("Top Predicted Numbers:")
-    st.write([num for num, _ in top_nums])
-    st.subheader("Top Pairs (Likely to be drawn together):")
-    st.write([pair for pair, _ in top_pairs])
-
-    if st.session_state['last_draw']:
-        pred_list = [num for num, _ in top_nums]
-        box_list = list(st.session_state['predicted_blocks'])
-        acc_pred, acc_box = calculate_accuracy(st.session_state['last_draw'], pred_list, box_list)
-        st.markdown(f"**🎯 Prediction Accuracy:** {acc_pred * 100:.2f}%")
-        st.markdown(f"**📦 Box/Rectangle Accuracy:** {acc_box * 100:.2f}%")
-
-if st.button("📊 Show Heatmap"):
-    draw_heatmap()
+def export_analysis():
+    pair_data = [{'A': a, 'B': b, 'Count': st.session_state['co_occurrence'][a][b]} for a in st.session_state['co_occurrence'] for b in st.session_state['co_occurrence'][a]]
+    df_pairs = pd.DataFrame(pair_data)
+    st.download_button("⬇️ Export Pair Co-occurrence", df_pairs.to_csv(index=False), file_name="pairs.csv")
+    triplet_data = [{'Triplet': str(k), 'Count': v} for k, v in st.session_state['triplet_occurrence'].items()]
+    df_triplets = pd.DataFrame(triplet_data)
+    st.download_button("⬇️ Export Triplet Co-occurrence", df_triplets.to_csv(index=False), file_name="triplets.csv")
