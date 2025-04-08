@@ -1,3 +1,4 @@
+
 # QuickDraw Prediction Web App (Streamlit-based)
 # Features: Upload PDF or Screenshot | Auto OCR | Grid Filtering | Heatmaps | Co-occurrence & Triplet Analysis | Square/Box Detection | Accuracy Stats | Export Options | Training Toggle
 
@@ -33,7 +34,6 @@ if 'last_draw' not in st.session_state:
 if 'pdf_error' not in st.session_state:
     st.session_state['pdf_error'] = ""
 
-# -------------------- OCR FROM IMAGE --------------------
 def extract_drawn_numbers_from_image(uploaded_image):
     image = Image.open(uploaded_image)
     img_cv = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2BGR)
@@ -48,7 +48,6 @@ def extract_drawn_numbers_from_image(uploaded_image):
     numbers = list(map(int, re.findall(r'\b[1-9]\b|\b[1-7][0-9]\b|\b80\b', text)))
     return sorted(set(numbers))
 
-# -------------------- TRAINING FROM PDF --------------------
 def process_pdf_and_train(uploaded_file):
     try:
         st.session_state['pdf_error'] = ""
@@ -87,7 +86,6 @@ def process_pdf_and_train(uploaded_file):
     except Exception as e:
         st.session_state['pdf_error'] = str(e)
 
-# -------------------- VISUALIZATIONS --------------------
 def draw_heatmap():
     heatmap = np.zeros((8, 10))
     for num, freq in st.session_state['occurrence'].items():
@@ -128,7 +126,6 @@ def highlight_boxes(drawn):
         ax.axis('off')
         st.pyplot(fig)
 
-# -------------------- PREDICTIONS & EXPORT --------------------
 def predict_top_numbers(n=20):
     return sorted(st.session_state['occurrence'].items(), key=lambda x: x[1], reverse=True)[:n]
 
@@ -154,3 +151,45 @@ def export_analysis():
     triplet_data = [{'Triplet': str(k), 'Count': v} for k, v in st.session_state['triplet_occurrence'].items()]
     df_triplets = pd.DataFrame(triplet_data)
     st.download_button("⬇️ Export Triplet Co-occurrence", df_triplets.to_csv(index=False), file_name="triplets.csv")
+
+# -------------------- MAIN INTERFACE --------------------
+st.sidebar.title("Quick Draw Dashboard")
+st.session_state['training_enabled'] = st.sidebar.checkbox("Enable Training", value=True)
+
+st.title("🎯 NJ Lottery Quick Draw Prediction Tool")
+
+uploaded_img = st.file_uploader("📸 Upload Screenshot of Latest Draw (highlighted numbers)", type=['png', 'jpg', 'jpeg'])
+if uploaded_img:
+    draw = extract_drawn_numbers_from_image(uploaded_img)
+    st.session_state['last_draw'] = draw
+    st.success(f"Detected Numbers: {draw}")
+    highlight_boxes(draw)
+
+uploaded_pdf = st.file_uploader("📄 Upload Historical Draw Data (PDF)", type=['pdf'])
+if uploaded_pdf and st.session_state['training_enabled']:
+    with st.spinner("Processing uploaded PDF..."):
+        process_pdf_and_train(uploaded_pdf)
+if st.session_state['pdf_error']:
+    st.error(f"❌ PDF Error: {st.session_state['pdf_error']}")
+
+if st.button("🔮 Show Predictions"):
+    top_nums = predict_top_numbers()
+    top_pairs = predict_top_pairs()
+    top_trips = predict_top_triplets()
+    st.subheader("Top Numbers Predicted:")
+    st.write([n for n, _ in top_nums])
+    st.subheader("Top Pairs:")
+    st.write([pair for pair, _ in top_pairs])
+    st.subheader("Top Triplets:")
+    st.write([trip for trip, _ in top_trips])
+    if st.session_state['last_draw']:
+        pred_nums = [n for n, _ in top_nums]
+        block_nums = list(st.session_state['predicted_blocks'])
+        acc_pred, acc_block = calculate_accuracy(st.session_state['last_draw'], pred_nums, block_nums)
+        st.markdown(f"**🎯 Prediction Accuracy:** `{acc_pred*100:.2f}%`")
+        st.markdown(f"**📦 Box/Rectangle Accuracy:** `{acc_block*100:.2f}%`")
+
+if st.button("📊 Show Heatmap"):
+    draw_heatmap()
+
+export_analysis()
