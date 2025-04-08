@@ -13,6 +13,7 @@ from collections import defaultdict, Counter
 from pdf2image import convert_from_path
 import matplotlib.pyplot as plt
 import seaborn as sns
+import tempfile
 
 st.set_page_config(layout="wide")
 
@@ -45,12 +46,17 @@ def extract_drawn_numbers_from_image(uploaded_image):
     numbers = list(map(int, re.findall(r'\b[1-9]\b|\b[1-7][0-9]\b|\b80\b', text)))
     return sorted(set(numbers))
 
-def process_pdf_and_train(pdf_file):
+def process_pdf_and_train(uploaded_file):
     try:
         st.session_state['pdf_error'] = ""
-        images = convert_from_path(pdf_file)
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            temp_pdf_path = tmp_file.name
+
+        images = convert_from_path(temp_pdf_path)
         draw_results = []
-        pattern = re.compile(r"(?:\\b\\d{1,2}\\b[\\s]*){10,25}")
+        pattern = re.compile(r"(?:\b\d{1,2}\b[\s]*){10,25}")
         total_pages = len(images)
 
         for i, image in enumerate(images):
@@ -59,7 +65,7 @@ def process_pdf_and_train(pdf_file):
             text = pytesseract.image_to_string(image)
             matches = pattern.findall(text)
             for match in matches:
-                numbers = list(map(int, re.findall(r'\\b\\d{1,2}\\b', match)))
+                numbers = list(map(int, re.findall(r'\b\d{1,2}\b', match)))
                 if len(numbers) == 20:
                     draw_results.append(numbers)
 
@@ -75,11 +81,9 @@ def process_pdf_and_train(pdf_file):
             st.success(f"Successfully trained on {len(df)} draws from PDF.")
         else:
             raise ValueError("No valid draw lines found in the PDF.")
+
     except Exception as e:
         st.session_state['pdf_error'] = str(e)
-
-# [Remaining functions unchanged]
-# Just make sure to display the error message:
 
 # -------------------- MAIN INTERFACE --------------------
 ...
