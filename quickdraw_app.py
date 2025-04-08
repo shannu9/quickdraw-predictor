@@ -45,6 +45,44 @@ def extract_drawn_numbers_from_image(uploaded_image):
     text = pytesseract.image_to_string(thresh, config='--psm 6 -c tessedit_char_whitelist=0123456789')
     numbers = list(map(int, re.findall(r'\b[1-9]\b|\b[1-7][0-9]\b|\b80\b', text)))
     return sorted(set(numbers))
+def process_pdf_and_train(uploaded_file):
+    try:
+        st.session_state['pdf_error'] = ""
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+            tmp_file.write(uploaded_file.read())
+            temp_pdf_path = tmp_file.name
+
+        images = convert_from_path(temp_pdf_path)
+        draw_results = []
+        pattern = re.compile(r"(?:\\b\\d{1,2}\\b[\\s]*){10,25}")
+        total_pages = len(images)
+
+        for i, image in enumerate(images):
+            progress = int((i + 1) / total_pages * 100)
+            st.info(f"Processing page {i+1}/{total_pages} ({progress}%)")
+            text = pytesseract.image_to_string(image)
+            matches = pattern.findall(text)
+            for match in matches:
+                numbers = list(map(int, re.findall(r'\\b\\d{1,2}\\b', match)))
+                if len(numbers) == 20:
+                    draw_results.append(numbers)
+
+        df = pd.DataFrame(draw_results)
+        if not df.empty:
+            for row in df.values:
+                for num in row:
+                    st.session_state['occurrence'][num] += 1
+                for i in range(len(row)):
+                    for j in range(i + 1, len(row)):
+                        a, b = sorted((row[i], row[j]))
+                        st.session_state['co_occurrence'][a][b] += 1
+            st.success(f"Successfully trained on {len(df)} draws from PDF.")
+        else:
+            raise ValueError("No valid draw lines found in the PDF.")
+
+    except Exception as e:
+        st.session_state['pdf_error'] = str(e)
 
 def predict_top_numbers(n=20):
     return sorted(st.session_state['occurrence'].items(), key=lambda x: x[1], reverse=True)[:n]
