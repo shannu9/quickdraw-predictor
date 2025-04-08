@@ -46,50 +46,56 @@ def extract_drawn_numbers_from_image(uploaded_image):
     numbers = list(map(int, re.findall(r'\b[1-9]\b|\b[1-7][0-9]\b|\b80\b', text)))
     return sorted(set(numbers))
 
-def process_pdf_and_train(uploaded_file):
-    try:
-        st.session_state['pdf_error'] = ""
+def predict_top_numbers(n=20):
+    return sorted(st.session_state['occurrence'].items(), key=lambda x: x[1], reverse=True)[:n]
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-            tmp_file.write(uploaded_file.read())
-            temp_pdf_path = tmp_file.name
+def predict_top_pairs(n=10):
+    pairs = []
+    for a in st.session_state['co_occurrence']:
+        for b in st.session_state['co_occurrence'][a]:
+            pairs.append(((a, b), st.session_state['co_occurrence'][a][b]))
+    return sorted(pairs, key=lambda x: x[1], reverse=True)[:n]
 
-        images = convert_from_path(temp_pdf_path)
-        draw_results = []
-        pattern = re.compile(r"(?:\b\d{1,2}\b[\s]*){10,25}")
-        total_pages = len(images)
+def calculate_accuracy(drawn, predicted_nums, predicted_blocks):
+    match_nums = set(drawn) & set(predicted_nums)
+    match_block = set(drawn) & set(predicted_blocks)
+    return len(match_nums) / len(predicted_nums), len(match_block) / max(len(predicted_blocks), 1)
 
-        for i, image in enumerate(images):
-            progress = int((i + 1) / total_pages * 100)
-            st.info(f"Processing page {i+1}/{total_pages} ({progress}%)")
-            text = pytesseract.image_to_string(image)
-            matches = pattern.findall(text)
-            for match in matches:
-                numbers = list(map(int, re.findall(r'\b\d{1,2}\b', match)))
-                if len(numbers) == 20:
-                    draw_results.append(numbers)
-
-        df = pd.DataFrame(draw_results)
-        if not df.empty:
-            for row in df.values:
-                for num in row:
-                    st.session_state['occurrence'][num] += 1
-                for i in range(len(row)):
-                    for j in range(i + 1, len(row)):
-                        a, b = sorted((row[i], row[j]))
-                        st.session_state['co_occurrence'][a][b] += 1
-            st.success(f"Successfully trained on {len(df)} draws from PDF.")
-        else:
-            raise ValueError("No valid draw lines found in the PDF.")
-
-    except Exception as e:
-        st.session_state['pdf_error'] = str(e)
+# Reuse your existing process_pdf_and_train (above unchanged)
 
 # -------------------- MAIN INTERFACE --------------------
-...
+st.sidebar.title("Quick Draw Dashboard")
+train_toggle = st.sidebar.checkbox("Enable Training from Uploaded Data", value=True)
+st.session_state['training_enabled'] = train_toggle
+
+st.title("🎯 NJ Lottery Quick Draw Prediction Tool")
+
+uploaded_img = st.file_uploader("Upload Screenshot of Latest Draw (highlighted numbers)", type=['png', 'jpg', 'jpeg'])
+if uploaded_img:
+    draw = extract_drawn_numbers_from_image(uploaded_img)
+    st.session_state['last_draw'] = draw
+    st.success(f"Detected Drawn Numbers: {draw}")
+else:
+    st.warning("Upload a screenshot to begin analysis.")
+
 uploaded_pdf = st.file_uploader("Upload Historical Draw Data (PDF)", type=['pdf'])
 if uploaded_pdf and st.session_state['training_enabled']:
     with st.spinner("Training from uploaded PDF..."):
         process_pdf_and_train(uploaded_pdf)
 if st.session_state['pdf_error']:
     st.error(f"❌ PDF Error: {st.session_state['pdf_error']}")
+
+if st.button("🔮 Show Predictions"):
+    top_nums = predict_top_numbers()
+    top_pairs = predict_top_pairs()
+    st.subheader("Top Predicted Numbers:")
+    st.write([num for num, _ in top_nums])
+    st.subheader("Top Pairs (Likely to be drawn together):")
+    st.write([pair for pair, _ in top_pairs])
+
+    if st.session_state['last_draw']:
+        pred_list = [num for num, _ in top_nums]
+        box_list = list(st.session_state['predicted_blocks'])
+        acc_pred, acc_box = calculate_accuracy(st.session_state['last_draw'], pred_list, box_list)
+        st.markdown(f"**🎯 Prediction Accuracy:** {acc_pred * 100:.2f}%")
+        st.markdown(f"**📦 Box/Rectangle Accuracy:** {acc_box * 100:.2f}%")
